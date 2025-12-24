@@ -10,6 +10,15 @@ from cs336_basics.bpe_tokenizer import BPETokenizer
 from cs336_basics.linear_module import LinearModule, EmbeddingModule
 from cs336_basics.norm_module import RMSNorm
 from cs336_basics.activation_module import SwiGLU
+from cs336_basics.attention import (
+    scaled_dot_product_attention,
+    causal_multihead_self_attention,
+    causal_multihead_self_attention_rope,
+)
+from cs336_basics.positional_embedding import (
+    RotaryPositionalEmbedding,
+    RotaryPositionalEmbeddingAdjacent,
+)
 
 import numpy.typing as npt
 import torch
@@ -124,7 +133,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, "... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask=mask)
 
 
 def run_multihead_self_attention(
@@ -158,7 +167,18 @@ def run_multihead_self_attention(
         Float[Tensor, "... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+
+    return causal_multihead_self_attention(
+        d_model,
+        num_heads,
+        q_proj_weight,
+        k_proj_weight,
+        v_proj_weight,
+        o_proj_weight,
+        in_features,
+    )
+
+    # raise NotImplementedError
 
 
 def run_multihead_self_attention_with_rope(
@@ -198,7 +218,20 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, "... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    return causal_multihead_self_attention_rope(
+        d_model,
+        num_heads,
+        max_seq_len,
+        theta,
+        q_proj_weight,
+        k_proj_weight,
+        v_proj_weight,
+        o_proj_weight,
+        in_features,
+        token_positions,
+    )
+
+    # raise NotImplementedError
 
 
 def run_rope(
@@ -220,7 +253,12 @@ def run_rope(
     Returns:
         Float[Tensor, "... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+
+    rope = RotaryPositionalEmbeddingAdjacent(
+        theta=theta, d_k=d_k, max_seq_len=max_seq_len
+    )
+    return rope(in_query_or_key, token_positions)
+    # raise NotImplementedError
 
 
 def run_transformer_block(
@@ -457,7 +495,10 @@ def run_softmax(in_features: Float[Tensor, "..."], dim: int) -> Float[Tensor, ".
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    from cs336_basics.softmax import softmax_function
+
+    return softmax_function(in_features, dim=dim)
+    # raise NotImplementedError
 
 
 def run_cross_entropy(

@@ -66,3 +66,145 @@ class RotaryPositionalEmbedding(nn.Module):
         # 标准 RoPE 公式：
         # 原向量 * cos + 旋转90度向量 * sin
         return (x * cos) + (x_rotated * sin)
+
+
+class RotaryPositionalEmbeddingAdjacent(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        """
+        相邻元素两两配对的 RoPE 实现 (x0, x1), (x2, x3) ...
+        这是 RoPE 原始论文中描述的排列方式。
+        """
+        super().__init__()
+        self.d_k = d_k
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+
+        # 1. 计算频率向量
+        freqs = 1.0 / (theta ** (torch.arange(0, d_k, 2, device=device).float() / d_k))
+        position_idx = torch.arange(max_seq_len, device=device).float()
+        angles = torch.outer(position_idx, freqs)
+
+        # 2. 扩展角度表：相邻重复 [theta_0, theta_0, theta_1, theta_1, ...]
+        # 形状: (max_seq_len, d_k)
+        angles = angles.repeat_interleave(2, dim=-1)
+
+        self.register_buffer("cos_cached", angles.cos())
+        self.register_buffer("sin_cached", angles.sin())
+
+    def forward(self, x, position_ids):
+        cos = self.cos_cached[position_ids]
+        sin = self.sin_cached[position_ids]
+        return self.apply_rotary_emb(x, cos, sin)
+
+    def apply_rotary_emb(self, x, cos, sin):
+        # 构造旋转向量: [-x1, x0, -x3, x2, ...]
+        # 这种实现需要通过 reshape 来交换相邻元素
+        x_reshaped = x.view(*x.shape[:-1], -1, 2)
+        x0 = x_reshaped[..., 0]
+        x1 = x_reshaped[..., 1]
+
+        # 拼接成 [-x1, x0] 的形式并还原形状
+        x_rotated = torch.stack((-x1, x0), dim=-1).view_as(x)
+
+        return (x * cos) + (x_rotated * sin)
+
+
+def _test_shapes_and_cache():
+    torch.manual_seed(0)
+    batch_size = 2
+    seq_len = 4
+    d_k = 8
+    theta = 10000.0
+    max_seq_len = 16
+
+    rope = RotaryPositionalEmbedding(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
+    x = torch.randn(batch_size, seq_len, d_k)
+    position_ids = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0]])
+    y = rope(x, position_ids)
+
+    assert y.shape == x.shape, f"shape mismatch: {y.shape} vs {x.shape}"
+    assert rope.cos_cached.shape == (max_seq_len, d_k)
+    assert rope.sin_cached.shape == (max_seq_len, d_k)
+    print("test_shapes_and_cache: OK")
+
+
+def _test_identity_at_pos0():
+    torch.manual_seed(0)
+    batch_size = 1
+    seq_len = 1
+    d_k = 8
+    theta = 10000.0
+    max_seq_len = 8
+
+    rope = RotaryPositionalEmbedding(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
+    x = torch.randn(batch_size, seq_len, d_k)
+    position_ids = torch.zeros((batch_size, seq_len), dtype=torch.long)
+    y = rope(x, position_ids)
+
+    # position 0 => angle 0 => cos=1, sin=0 so output should equal input
+    if not torch.allclose(x, y, atol=1e-6):
+        max_diff = (x - y).abs().max().item()
+        raise AssertionError(f"identity check failed, max diff: {max_diff}")
+    print("test_identity_at_pos0: OK")
+
+
+def _test_norm_preservation():
+    torch.manual_seed(0)
+    batch_size = 2
+    seq_len = 5
+    d_k = 8
+    theta = 10000.0
+    max_seq_len = 16
+
+    rope = RotaryPositionalEmbedding(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
+    x = torch.randn(batch_size, seq_len, d_k)
+    position_ids = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
+    y = rope(x, position_ids)
+
+    # RoPE is a rotation, so per-token vector norms should be preserved
+    x_norm = torch.linalg.norm(x, dim=-1)
+    y_norm = torch.linalg.norm(y, dim=-1)
+    if not torch.allclose(x_norm, y_norm, atol=1e-6):
+        max_diff = (x_norm - y_norm).abs().max().item()
+        raise AssertionError(f"norm check failed, max diff: {max_diff}")
+    print("test_norm_preservation: OK")
+
+
+def _test_compare_implementations():
+    torch.manual_seed(0)
+    batch_size = 1
+    seq_len = 2
+    d_k = 4
+    theta = 10000.0
+    max_seq_len = 8
+
+    x = torch.randn(batch_size, seq_len, d_k)
+    position_ids = torch.arange(seq_len).unsqueeze(0)
+
+    rope_split = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    rope_adj = RotaryPositionalEmbeddingAdjacent(theta, d_k, max_seq_len)
+
+    y_split = rope_split(x, position_ids)
+    y_adj = rope_adj(x, position_ids)
+
+    print("Input x:\n", x)
+    print("Output (Split):\n", y_split)
+    print("Output (Adjacent):\n", y_adj)
+
+    # Both should preserve norm
+    assert torch.allclose(
+        torch.linalg.norm(x, dim=-1), torch.linalg.norm(y_split, dim=-1)
+    )
+    assert torch.allclose(
+        torch.linalg.norm(x, dim=-1), torch.linalg.norm(y_adj, dim=-1)
+    )
+    print(
+        "test_compare_implementations: OK (Both preserve norms, but outputs differ in ordering)"
+    )
+
+
+if __name__ == "__main__":
+    _test_shapes_and_cache()
+    _test_identity_at_pos0()
+    _test_norm_preservation()
+    _test_compare_implementations()
