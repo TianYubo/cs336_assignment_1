@@ -1,0 +1,32 @@
+data/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+.cache/
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+.python-version
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+*.npz
+*.pt
+
