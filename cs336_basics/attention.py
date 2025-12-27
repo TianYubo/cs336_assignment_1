@@ -6,8 +6,18 @@ from .positional_embedding import RotaryPositionalEmbeddingAdjacent
 from torch import Tensor
 from jaxtyping import Float, Int
 
-
 from .linear_module import LinearModule
+
+
+"""
+Multi-Head Attention implementation with RoPE support.
+FLOPs 分析：
+- 假设输入张量形状为 (B, L, D)，其中 B 是批量大小，L 是序列长度，D 是模型维度。
+- 主要计算步骤包括：
+    1. 线性投影 Q, K, V：3 * (2BLD * D) = 6BLD^2 FLOPs
+    2. 计算注意力分数：B * num_heads * L * L * (D / num_heads) = B * L^2 * D FLOPs
+    3. Q 和 K 的 RoPE 位置编码应用：2 * 3.5 * BLD = 7*BLD FLOPs
+"""
 
 
 class MultiHeadAttention(nn.Module):
@@ -35,7 +45,9 @@ class MultiHeadAttention(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, token_positions: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,  # shape: (..., seq_len, d_model)
+        token_positions: torch.Tensor | None = None,  # shape: (..., seq_len)
     ) -> torch.Tensor:
         batch_dims = x.shape[:-2]
         seq_len = x.shape[-2]

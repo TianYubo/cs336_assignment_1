@@ -70,6 +70,19 @@ class RotaryPositionalEmbedding(nn.Module):
         return (x * cos) + (x_rotated * sin)
 
 
+"""
+RoPE 相邻元素两两配对的实现。
+FLOPs 分析：
+- 假设输入张量形状为 (B, L, D)，其中 B 是批量大小，L 是序列长度，D 是模型维度。
+- 构建频率向量的过程是一次性的，忽略不计。
+- 主要计算步骤：(x * cos) + (x_rotated * sin)，
+    这一步的 FLOPs 为 乘法 2 * BLD + 加法 BLD = 3 * BLD。
+    x_rotated = torch.stack((-x1, x0), dim=-1).view_as(x) 这一步的 FLOPs 为 重排操作，
+    只有一半的元素取反，0.5*BLD 次乘法。
+- 总计约为 3.5 * BLD FLOPs。
+"""
+
+
 class RotaryPositionalEmbeddingAdjacent(nn.Module):
     def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
         """
@@ -82,9 +95,11 @@ class RotaryPositionalEmbeddingAdjacent(nn.Module):
         self.max_seq_len = max_seq_len
 
         # 1. 计算频率向量
-        freqs = 1.0 / (theta ** (torch.arange(0, d_k, 2, device=device) / d_k))
-        position_idx = torch.arange(max_seq_len, device=device)
-        angles = torch.outer(position_idx, freqs)
+        freqs = 1.0 / (
+            theta ** (torch.arange(0, d_k, 2, device=device) / d_k)
+        )  # (d_k/2,)
+        position_idx = torch.arange(max_seq_len, device=device)  # (max_seq_len,)
+        angles = torch.outer(position_idx, freqs)  # (max_seq_len, d_k/2)
 
         # 2. 扩展角度表：相邻重复 [theta_0, theta_0, theta_1, theta_1, ...]
         # 形状: (max_seq_len, d_k)
@@ -114,7 +129,7 @@ class RotaryPositionalEmbeddingAdjacent(nn.Module):
         # 拼接成 [-x1, x0] 的形式并还原形状
         x_rotated = torch.stack((-x1, x0), dim=-1).view_as(x)
 
-        return (x * cos) + (x_rotated * sin)
+        return (x * cos) + (x_rotated * sin)  # (B, L, D) * (L, D) => (B, L, D)
 
 
 def _test_shapes_and_cache():

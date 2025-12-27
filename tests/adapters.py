@@ -21,6 +21,7 @@ from cs336_basics.positional_embedding import (
     RotaryPositionalEmbeddingAdjacent,
 )
 from cs336_basics.transformer_lm import Transformer_LM
+from cs336_basics.loss import CrossEntropyLoss
 
 import numpy.typing as npt
 import torch
@@ -543,7 +544,8 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return CrossEntropyLoss(inputs, targets)
+    # raise NotImplementedError
 
 
 def run_gradient_clipping(

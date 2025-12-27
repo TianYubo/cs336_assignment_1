@@ -2,6 +2,26 @@ import torch
 import torch.nn as nn
 from einops import einsum
 
+"""
+RMSNorm implementation.
+FLOPs 分析：
+- 针对一个长度为 D 的向量，RMSNorm 主要涉及以下计算步骤：
+    1. 计算平方：D 次乘法
+    2. 计算均值：D-1 次加法 + 1 次除法
+    3. 加偏移量 + self.eps: 1 次加法
+    4. 计算平方根的倒数（rsqrt）：1 次平方根 + 1 次求导
+    5. 归一化乘以权重：D 次乘法
+    6. 仿射变换（乘以权重）：D 次乘法
+- 总计：
+    - 乘法：3D + 1
+    - 加法：D
+    - 除法：1
+    - 平方根：1
+- 因此，RMSNorm 的总 FLOPs 约为 4D + 4
+
+对于（B, L, D) 的输入，RMSNorm 的总 FLOPs 约为 B * L * (4D + 4)，看作为 4BLD FLOPs
+"""
+
 
 class RMSNorm(nn.Module):
     def __init__(
