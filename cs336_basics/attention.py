@@ -7,6 +7,75 @@ from torch import Tensor
 from jaxtyping import Float, Int
 
 
+from .linear_module import LinearModule
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        max_seq_len: int,
+        theta: float,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+
+        self.q_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
+        self.output_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
+
+        self.rope = RotaryPositionalEmbeddingAdjacent(
+            theta=theta, d_k=self.d_k, max_seq_len=max_seq_len, device=device
+        )
+
+    def forward(
+        self, x: torch.Tensor, token_positions: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        batch_dims = x.shape[:-2]
+        seq_len = x.shape[-2]
+
+        if token_positions is None:
+            token_positions = (
+                torch.arange(seq_len, device=x.device)
+                .unsqueeze(0)
+                .expand(*batch_dims, seq_len)
+            )
+
+        Q = self.q_proj(x)
+        K = self.k_proj(x)
+        V = self.v_proj(x)
+
+        Q = Q.view(*batch_dims, seq_len, self.num_heads, self.d_k).transpose(-3, -2)
+        K = K.view(*batch_dims, seq_len, self.num_heads, self.d_k).transpose(-3, -2)
+        V = V.view(*batch_dims, seq_len, self.num_heads, self.d_k).transpose(-3, -2)
+
+        Q = self.rope(Q, token_positions)
+        K = self.rope(K, token_positions)
+
+        # 创建因果掩码 (Causal Mask)
+        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device)).unsqueeze(0)
+
+        # 缩放点积注意力
+        attn_output = scaled_dot_product_attention(
+            Q, K, V, mask=mask
+        )  # (..., num_heads, seq_len, d_k)
+        attn_output = (
+            attn_output.transpose(-3, -2)
+            .contiguous()
+            .view(*batch_dims, seq_len, self.d_model)
+        )
+
+        output = self.output_proj(attn_output)
+
+        return output
+
+
 def scaled_dot_product_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -180,10 +249,15 @@ def causal_multihead_self_attention_rope(
     K = K.view(*batch_dims, seq_len, num_heads, d_k // num_heads).transpose(-3, -2)
     V = V.view(*batch_dims, seq_len, num_heads, d_v // num_heads).transpose(-3, -2)
 
-    if token_positions is not None:
-        position_ids = token_positions
-        Q = rope(Q, position_ids)
-        K = rope(K, position_ids)
+    if token_positions is None:
+        token_positions = (
+            torch.arange(seq_len, device=in_features.device)
+            .unsqueeze(0)
+            .expand(*batch_dims, seq_len)
+        )
+
+    Q = rope(Q, token_positions)
+    K = rope(K, token_positions)
 
     # 创建因果掩码 (Causal Mask)
     mask = torch.tril(

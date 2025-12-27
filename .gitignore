@@ -29,4 +29,5 @@ env/
 Thumbs.db
 *.npz
 *.pt
-
+*.zip
+*.pkl

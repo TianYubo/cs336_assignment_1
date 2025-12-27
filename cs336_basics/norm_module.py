@@ -18,7 +18,7 @@ class RMSNorm(nn.Module):
         gain_tensor = torch.ones(d_model, dtype=dtype)
         if device is not None:
             gain_tensor = gain_tensor.to(device)
-        self.gain = nn.Parameter(gain_tensor)
+        self.weight = nn.Parameter(gain_tensor)
 
     def forward(self, x: torch.Tensor):
         in_dtype = x.dtype
@@ -26,10 +26,11 @@ class RMSNorm(nn.Module):
 
         # # 方法1：最直接的方式
         # rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
+        # rms = 1.0 / rms
 
         # 方法2：使用 rsqrt (reciprocal square root) 更快
         rms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        rms_norm = x * rms * self.gain  # 注意这里是乘法
+        rms_norm = x * rms * self.weight  # 注意这里是乘法
 
         # rms_norm = x / rms * self.gain
         return rms_norm.to(in_dtype)

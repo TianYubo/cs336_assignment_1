@@ -21,13 +21,13 @@ class LinearModule(nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
-        self.W = nn.Parameter(
+        self.weight = nn.Parameter(
             torch.empty((out_features, in_features), device=device, dtype=dtype)
         )
 
     def forward(self, x):
         return einsum(
-            self.W,
+            self.weight,
             x,
             "d_out d_in, ... d_in -> ... d_out",
         )

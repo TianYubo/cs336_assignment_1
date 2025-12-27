@@ -10,6 +10,7 @@ from cs336_basics.bpe_tokenizer import BPETokenizer
 from cs336_basics.linear_module import LinearModule, EmbeddingModule
 from cs336_basics.norm_module import RMSNorm
 from cs336_basics.activation_module import SwiGLU
+from cs336_basics.transformer import TransformerBlock
 from cs336_basics.attention import (
     scaled_dot_product_attention,
     causal_multihead_self_attention,
@@ -19,6 +20,7 @@ from cs336_basics.positional_embedding import (
     RotaryPositionalEmbedding,
     RotaryPositionalEmbeddingAdjacent,
 )
+from cs336_basics.transformer_lm import Transformer_LM
 
 import numpy.typing as npt
 import torch
@@ -47,7 +49,7 @@ def run_linear(
     """
 
     linear_layer = LinearModule(d_in, d_out)
-    linear_layer.load_state_dict({"W": weights})
+    linear_layer.load_state_dict({"weight": weights})
 
     return linear_layer(in_features)
 
@@ -107,9 +109,9 @@ def run_swiglu(
     # swiglu.w3.weight.data = w3_weight
 
     swiglu = SwiGLU(d_model, d_ff)
-    swiglu.w1.data = w1_weight
-    swiglu.w2.data = w2_weight
-    swiglu.w3.data = w3_weight
+    swiglu.w1.weight.data = w1_weight
+    swiglu.w2.weight.data = w2_weight
+    swiglu.w3.weight.data = w3_weight
 
     return swiglu(in_features)
     # raise NotImplementedError
@@ -331,7 +333,17 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta,
+        device=in_features.device,
+        dtype=in_features.dtype,
+    )
+    block.load_state_dict(weights)
+    return block(in_features)
 
 
 def run_transformer_lm(
@@ -413,7 +425,22 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer_lm_model = Transformer_LM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta,
+        device=in_indices.device,
+        dtype=weights["token_embeddings.weight"].dtype,
+    )
+    transformer_lm_model.load_state_dict(weights)
+
+    return transformer_lm_model(in_indices)
+
+    # raise NotImplementedError
 
 
 def run_rmsnorm(
@@ -439,7 +466,7 @@ def run_rmsnorm(
     input_device = in_features.device
     input_dtype = in_features.dtype
     rms_norm_module = RMSNorm(d_model, eps, input_device, input_dtype)
-    rms_norm_module.load_state_dict({"gain": weights})
+    rms_norm_module.load_state_dict({"weight": weights})
     return rms_norm_module(in_features)
 
     # raise NotImplementedError
