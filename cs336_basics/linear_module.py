@@ -24,6 +24,7 @@ class LinearModule(nn.Module):
         self.weight = nn.Parameter(
             torch.empty((out_features, in_features), device=device, dtype=dtype)
         )
+        nn.init.xavier_uniform_(self.weight)
 
     def forward(self, x):
         return einsum(
@@ -54,6 +55,7 @@ class EmbeddingModule(nn.Module):
         self.weight = nn.Parameter(
             torch.empty((vocab_size, embedding_dim), device=device, dtype=dtype)
         )
+        nn.init.xavier_uniform_(self.weight)
 
     def forward(self, token_ids):
         return self.weight[token_ids]

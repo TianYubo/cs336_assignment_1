@@ -189,8 +189,12 @@ class NaiveAdamW(Optimizer):
                 state = self.state[p]
                 if len(state) == 0:
                     state["step"] = 0
-                    state["m"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state["v"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state["m"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+                    state["v"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
 
                 state["step"] += 1
                 t = state["step"]

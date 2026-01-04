@@ -509,9 +509,9 @@ def run_get_batch(
     """
     from cs336_basics.dataloader import simple_dataloader
 
-    loader = simple_dataloader(dataset, batch_size, context_length)
+    loader = simple_dataloader(dataset, batch_size, context_length, device)
     x, y = next(loader)
-    return x.to(device), y.to(device)
+    return x, y
 
 
 def run_softmax(in_features: Float[Tensor, "..."], dim: int) -> Float[Tensor, "..."]:
@@ -564,6 +564,7 @@ def run_gradient_clipping(
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
     from cs336_basics.norm_module import gradient_clipping
+
     return gradient_clipping(parameters, max_l2_norm)
 
 
@@ -605,7 +606,9 @@ def run_get_lr_cosine_schedule(
     """
     from cs336_basics.lr_schedule import get_cosine_annealing_lr
 
-    return get_cosine_annealing_lr(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
+    return get_cosine_annealing_lr(
+        it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters
+    )
 
 
 def run_save_checkpoint(
@@ -624,7 +627,11 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import save_checkpoint
+
+    return save_checkpoint(model, optimizer, iteration, out)
+
+    # raise NotImplementedError
 
 
 def run_load_checkpoint(
@@ -645,7 +652,11 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import load_checkpoint
+
+    return load_checkpoint(src, model, optimizer)
+
+    # raise NotImplementedError
 
 
 def get_tokenizer(
