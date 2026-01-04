@@ -20,6 +20,7 @@ dependencies = [
     "wandb>=0.19.7",
     "scalene>=1.5.51",
     "chardet>=5.2.0",
+    "matplotlib>=3.10.8",
 ]
 
 

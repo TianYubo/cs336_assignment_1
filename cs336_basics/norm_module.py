@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from einops import einsum
+from collections.abc import Iterable
+import math
 
 """
 RMSNorm implementation.
@@ -54,3 +56,81 @@ class RMSNorm(nn.Module):
 
         # rms_norm = x / rms * self.gain
         return rms_norm.to(in_dtype)
+
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], 
+                      max_l2_norm: float, 
+                      eps: float = 1e-6) -> None:
+    """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
+
+    Args:
+        parameters (Iterable[torch.nn.Parameter]): collection of trainable parameters.
+        max_l2_norm (float): a positive value containing the maximum l2-norm.
+
+    The gradients of the parameters (parameter.grad) should be modified in-place.
+    """
+    params_with_grad = [p for p in parameters if p.grad is not None]
+    if len(params_with_grad) == 0:
+        return
+
+    # 1. 正确计算总范数：平方和的平方根
+    total_norm_sq = 0.0
+    for p in params_with_grad:
+        if p.grad is not None:
+            # 使用 detach() 保证不计入计算图
+            param_norm = p.grad.detach().norm(2)
+            total_norm_sq += param_norm.item() ** 2
+    total_norm = math.sqrt(total_norm_sq)
+
+    if total_norm > max_l2_norm:
+        clip_coef = max_l2_norm / (total_norm + eps)
+        with torch.no_grad():
+            for p in params_with_grad:
+                if p.grad is not None:
+                    p.grad.mul_(clip_coef)
+
+
+if __name__ == "__main__":
+    # 测试场景：模拟一个简单的模型梯度裁剪
+    torch.manual_seed(42)
+    
+    # 1. 创建模拟参数
+    p1 = nn.Parameter(torch.randn(2, 3))
+    p2 = nn.Parameter(torch.randn(4))
+    
+    # 手动设置梯度，使其总范数已知
+    # p1 梯度全为 1 (6个元素), p2 梯度全为 1 (4个元素)
+    # 总范数 = sqrt(6 * 1^2 + 4 * 1^2) = sqrt(10) ≈ 3.162
+    p1.grad = torch.ones_like(p1.data)
+    p2.grad = torch.ones_like(p2.data)
+    
+    params = [p1, p2]
+    
+    def get_current_norm(parameters):
+        total_norm_sq = 0.0
+        for p in parameters:
+            if p.grad is not None:
+                total_norm_sq += p.grad.detach().norm(2).item() ** 2
+        return math.sqrt(total_norm_sq)
+
+    initial_norm = get_current_norm(params)
+    print(f"初始总梯度范数: {initial_norm:.4f} (预期: {math.sqrt(10):.4f})")
+
+    # 2. 测试裁剪情况：设置阈值为 1.0 (小于 3.162)
+    max_norm = 1.0
+    print(f"\n--- 执行裁剪 (阈值 = {max_norm}) ---")
+    gradient_clipping(params, max_l2_norm=max_norm)
+    
+    clipped_norm = get_current_norm(params)
+    print(f"裁剪后总梯度范数: {clipped_norm:.4f} (预期应该接近 {max_norm})")
+    print(f"p1 梯度的第一个元素: {p1.grad[0, 0].item():.4f}")
+    
+    # 3. 测试无需裁剪的情况
+    print(f"\n--- 执行裁剪 (阈值 = 10.0, 不应触发) ---")
+    # 重新设置梯度为全 1
+    p1.grad = torch.ones_like(p1.data)
+    p2.grad = torch.ones_like(p2.data)
+    
+    gradient_clipping(params, max_l2_norm=10.0)
+    final_norm = get_current_norm(params)
+    print(f"操作后总梯度范数: {final_norm:.4f} (预期保持原始值 {initial_norm:.4f})")
