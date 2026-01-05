@@ -1,3 +1,22 @@
+"""文本预处理脚本：
+
+本脚本用于将原始文本数据转换为适用于神经网络训练的二进制格式（如 GPT-2/3/4 所用）。
+它会读取每一行文本，使用指定的 BPE 分词器（由 vocab.json 和 merges.txt 定义）进行分词编码，
+然后将所有分词后的 token ids 保存为高效的 uint16 二进制文件（.bin）。
+
+用法示例：
+python scripts/preprocess_data.py --input data/raw.txt --output data/tokenized.bin --vocab tests/fixtures/gpt2_vocab.json --merges tests/fixtures/gpt2_merges.txt
+
+参数说明:
+--input   指定原始文本文件路径，每行为一个样本
+--output  指定输出的二进制 token id 文件路径
+--vocab   BPE 分词器的 vocab 文件路径
+--merges  BPE 分词器的 merges 文件路径
+
+输出文件可被训练脚本直接高效加载。
+
+"""
+
 import os
 import numpy as np
 import argparse

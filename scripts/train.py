@@ -18,7 +18,8 @@ from cs336_basics.utils import save_checkpoint, load_checkpoint
 @dataclass
 class TrainingConfig:
     # 模型超参数
-    vocab_size: int = 50257  # 根据实际 tokenizer 调整
+    vocab_path: str = "tests/fixtures/gpt2_vocab.json"
+    vocab_size: int = None  # 将在运行时根据 vocab_path 自动确定
     context_length: int = 128
     d_model: int = 256
     num_layers: int = 4
@@ -34,15 +35,17 @@ class TrainingConfig:
     warmup_iters: int = 500
     weight_decay: float = 0.1
     grad_clip: float = 1.0
+    use_amp: bool = True  # 是否使用混合精度训练 (GTX 1660 Ti 强烈建议开启)
 
     # IO 与 日志参数
-    train_data_path: str = "data/TinyStoriesV2-GPT4-valid.bin"
+    train_data_path: str = "data/TinyStoriesV2-GPT4-train.bin"
     valid_data_path: str = "data/TinyStoriesV2-GPT4-valid.bin"
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "logs"
     eval_interval: int = 500
     log_interval: int = 10
     eval_iters: int = 50
+    compile: bool = True  # 是否使用 torch.compile 加速
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -99,6 +102,24 @@ def train(config: TrainingConfig):
     device = torch.device(config.device)
     print(f"Using device: {device}")
 
+    # 自动获取并校验词表大小
+    if config.vocab_size is None:
+        import json
+
+        if os.path.exists(config.vocab_path):
+            with open(config.vocab_path, "r", encoding="utf-8") as f:
+                vocab = json.load(f)
+                config.vocab_size = len(vocab)
+            print(
+                f"Successfully loaded vocab from {config.vocab_path}. Vocab size: {config.vocab_size}"
+            )
+        else:
+            # 如果没找到词表文件，则报错提醒，避免模型参数设置错误
+            raise FileNotFoundError(
+                f"Vocab file not found at {config.vocab_path}. "
+                "Please provide a valid vocab_path or set vocab_size manually."
+            )
+
     # 初始化模型
     model = Transformer_LM(
         vocab_size=config.vocab_size,
@@ -112,10 +133,19 @@ def train(config: TrainingConfig):
     )
     model.to(device)
 
+    # 使用 torch.compile 加速模型 (PyTorch 2.0+)
+    if config.compile:
+        print("Compiling model (this may take a minute)...")
+        # 使用 reduce-overhead 模式，更适合你的显卡且能显著减少 Python 运行开销
+        model = torch.compile(model, mode="reduce-overhead")
+
     # 初始化优化器
     optimizer = SimpleAdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
+
+    # 初始化混合精度训练的 Scaler
+    scaler = torch.amp.GradScaler("cuda", enabled=config.use_amp)
 
     # 初始化数据加载器
     try:
@@ -163,29 +193,38 @@ def train(config: TrainingConfig):
             if losses["valid"] < best_val_loss:
                 best_val_loss = losses["valid"]
                 save_path = os.path.join(config.checkpoint_dir, "best_model.pt")
-                save_checkpoint(model, optimizer, iter_num, save_path)
+                # 如果模型被编译了，保存原始模型以保持 state_dict 干净
+                raw_model = model._orig_mod if config.compile else model
+                save_checkpoint(raw_model, optimizer, iter_num, save_path)
                 print(f"Saved new best model to {save_path}")
 
             # 定期保存普通检查点
             checkpoint_path = os.path.join(config.checkpoint_dir, f"ckpt_latest.pt")
-            save_checkpoint(model, optimizer, iter_num, checkpoint_path)
+            raw_model = model._orig_mod if config.compile else model
+            save_checkpoint(raw_model, optimizer, iter_num, checkpoint_path)
 
         # 3. 训练步骤
         x, y = next(train_loader)
-        logits = model(x)
 
-        # 展平以便计算损失
-        B, L, V = logits.shape
-        loss = CrossEntropyLoss(logits.view(B * L, V), y.view(B * L))
+        # 使用 autocast 进行混合精度训练
+        with torch.amp.autocast("cuda", enabled=config.use_amp):
+            logits = model(x)
+            # 展平以便计算损失
+            B, L, V = logits.shape
+            loss = CrossEntropyLoss(logits.view(B * L, V), y.view(B * L))
 
         optimizer.zero_grad()
-        loss.backward()
+        # 使用 scaler 缩放损失并反向传播
+        scaler.scale(loss).backward()
 
-        # 梯度裁剪
+        # 梯度裁剪 (在 unscale 之后进行)
         if config.grad_clip > 0:
+            scaler.unscale_(optimizer)
             gradient_clipping(model.parameters(), config.grad_clip)
 
-        optimizer.step()
+        # 优化器步进
+        scaler.step(optimizer)
+        scaler.update()
 
         # 4. 控制台日志记录
         if iter_num % config.log_interval == 0:
