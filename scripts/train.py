@@ -1,9 +1,10 @@
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 # 导入用户自己编写的模型和工具
 from cs336_basics.transformer_lm import Transformer_LM
@@ -20,21 +21,29 @@ class TrainingConfig:
     # 模型超参数
     vocab_path: str = "tests/fixtures/gpt2_vocab.json"
     vocab_size: int = None  # 将在运行时根据 vocab_path 自动确定
-    context_length: int = 128
-    d_model: int = 256
-    num_layers: int = 4
-    num_heads: int = 4
-    d_ff: int = 1024
-    rope_theta: float = 10000.0
+    context_length: int = 128  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
+    d_model: int = 256  # 推荐: 128-768 (需被 num_heads 整除)
+    num_layers: int = 4  # 推荐: 4-12 (层数多利于理解复杂语法)
+    num_heads: int = (
+        4  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
+    )
+    d_ff: int = 1024  # 推荐: 4 * d_model (标准 Transformer 比例)
+    rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
 
     # 训练超参数
-    batch_size: int = 32
-    learning_rate: float = 6e-4
-    min_learning_rate: float = 6e-5
-    max_iters: int = 5000
-    warmup_iters: int = 500
-    weight_decay: float = 0.1
-    grad_clip: float = 1.0
+    batch_size: int = (
+        32  # 推荐: 16-128 (视显存而定，总 batch tokens = batch_size * context_length)
+    )
+    learning_rate: float = (
+        1e-3  # 推荐: 3e-4 到 1e-3 (小模型 LR 可稍大，大模型通常用 3e-4 或更小)
+    )
+    min_learning_rate: float = 6e-5  # 推荐: 0.1 * learning_rate 或更低
+    max_iters: int = (
+        5000  # 推荐: 视 Loss 曲线而定，TinyStories 充分训练通常需 20k+ steps
+    )
+    warmup_iters: int = 500  # 推荐: 5%-10% of max_iters
+    weight_decay: float = 0.1  # 推荐: 0.01 - 0.1 (用于防止过拟合)
+    grad_clip: float = 1.0  # 推荐: 1.0 (防止梯度爆炸，必设)
     use_amp: bool = True  # 是否使用混合精度训练 (GTX 1660 Ti 强烈建议开启)
 
     # IO 与 日志参数
@@ -42,10 +51,17 @@ class TrainingConfig:
     valid_data_path: str = "data/TinyStoriesV2-GPT4-valid.bin"
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "logs"
-    eval_interval: int = 500
-    log_interval: int = 10
-    eval_iters: int = 50
-    compile: bool = True  # 是否使用 torch.compile 加速
+    eval_interval: int = 500  # 建议: 每 500-1000 步评估一次
+    log_interval: int = 10  # 建议: 10-50 步记录一次日志
+    eval_iters: int = 50  # 评估时使用的 batch 数量
+    compile: bool = True  # 是否使用 torch.compile 加速 (首次运行有编译延迟)
+
+    # WandB 参数
+    use_wandb: bool = True
+    wandb_project: str = "cs336-assignment-1"
+    wandb_run_name: str = field(
+        default_factory=lambda: f"transformer-run-{time.strftime('%H%M%S')}"
+    )
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -95,6 +111,14 @@ def train(config: TrainingConfig):
     # 准备目录
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
+
+    # 初始化 WandB
+    if config.use_wandb:
+        wandb.init(
+            project=config.wandb_project,
+            name=config.wandb_run_name,
+            config=asdict(config),
+        )
 
     # TensorBoard 记录器
     writer = SummaryWriter(log_dir=config.log_dir)
@@ -161,9 +185,11 @@ def train(config: TrainingConfig):
 
     iter_num = 0
     best_val_loss = float("inf")
+    total_time = 0.0  # 累计挂钟时间
 
     print("Starting training loop...")
-    t0 = time.time()
+    start_time = time.time()
+    t0 = start_time
 
     while iter_num <= config.max_iters:
         # 1. 计算当前学习率 (余弦退火)
@@ -188,6 +214,18 @@ def train(config: TrainingConfig):
             writer.add_scalar("Loss/train", losses["train"], iter_num)
             writer.add_scalar("Loss/valid", losses["valid"], iter_num)
             writer.add_scalar("LearningRate", lr, iter_num)
+
+            # 记录到 WandB
+            if config.use_wandb:
+                wandb.log(
+                    {
+                        "val/loss": losses["valid"],
+                        "train/loss_eval": losses["train"],
+                        "lr": lr,
+                        "wall_clock_time": time.time() - start_time,
+                    },
+                    step=iter_num,
+                )
 
             # 如果是最佳模型则单独保存
             if losses["valid"] < best_val_loss:
@@ -232,12 +270,29 @@ def train(config: TrainingConfig):
             dt = t1 - t0
             t0 = t1
             lossf = loss.item()
-            print(f"Iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
+            wall_time = t1 - start_time
+            print(
+                f"Iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, total_time {wall_time:.2f}s"
+            )
             writer.add_scalar("Loss/iter", lossf, iter_num)
+            writer.add_scalar("Time/wall_clock", wall_time, iter_num)
+
+            if config.use_wandb:
+                wandb.log(
+                    {
+                        "train/loss": lossf,
+                        "train/lr": lr,
+                        "train/iter_dt": dt,
+                        "wall_clock_time": wall_time,
+                    },
+                    step=iter_num,
+                )
 
         iter_num += 1
 
     writer.close()
+    if config.use_wandb:
+        wandb.finish()
     print("Training finished.")
 
 

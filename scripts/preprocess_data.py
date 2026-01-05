@@ -24,6 +24,15 @@ from tqdm import tqdm
 from cs336_basics.bpe_tokenizer import get_tokenizer_from_vocab_merges_path
 
 
+def count_tokens_in_bin(bin_path: str) -> int:
+    """统计二进制文件中的 token 数量。"""
+    if not os.path.exists(bin_path):
+        raise FileNotFoundError(f"找不到文件: {bin_path}")
+    # 读取 uint16 格式的二进制文件
+    token_ids = np.fromfile(bin_path, dtype=np.uint16)
+    return len(token_ids)
+
+
 def preprocess(input_path, output_path, vocab_path, merges_path, special_tokens=None):
     print(f"Loading tokenizer from {vocab_path} and {merges_path}...")
     tokenizer = get_tokenizer_from_vocab_merges_path(
@@ -51,12 +60,8 @@ def preprocess(input_path, output_path, vocab_path, merges_path, special_tokens=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Preprocess text data for training.")
-    parser.add_argument(
-        "--input", type=str, required=True, help="Path to raw text file"
-    )
-    parser.add_argument(
-        "--output", type=str, required=True, help="Path to save binary file"
-    )
+    parser.add_argument("--input", type=str, help="Path to raw text file")
+    parser.add_argument("--output", type=str, help="Path to save binary file")
     parser.add_argument(
         "--vocab",
         type=str,
@@ -72,16 +77,32 @@ if __name__ == "__main__":
     parser.add_argument(
         "--special_tokens", type=str, nargs="*", default=None, help="Special tokens"
     )
+    parser.add_argument(
+        "--count_only",
+        type=str,
+        default=None,
+        help="If provided, only count tokens in this .bin file and exit",
+    )
 
     args = parser.parse_args()
 
-    # 确保输出目录存在
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    if args.count_only:
+        num_tokens = count_tokens_in_bin(args.count_only)
+        print(f"File: {args.count_only}")
+        print(f"Total tokens: {num_tokens}")
+    else:
+        if not args.input or not args.output:
+            parser.error(
+                "--input and --output are required unless --count_only is used."
+            )
 
-    preprocess(
-        args.input,
-        args.output,
-        args.vocab,
-        args.merges,
-        special_tokens=args.special_tokens,
-    )
+        # 确保输出目录存在
+        os.makedirs(os.path.dirname(args.output), exist_ok=True)
+
+        preprocess(
+            args.input,
+            args.output,
+            args.vocab,
+            args.merges,
+            special_tokens=args.special_tokens,
+        )
