@@ -1,5 +1,6 @@
 import os
 import time
+import random
 from dataclasses import dataclass, field, asdict
 import numpy as np
 import torch
@@ -7,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 # 导入用户自己编写的模型和工具
-from cs336_basics.transformer_lm import Transformer_LM
+from cs336_basics.transformer_lm import Transformer_LM, PostNormTransformer_LM
 from cs336_basics.optimizer import SimpleAdamW
 from cs336_basics.lr_schedule import get_cosine_annealing_lr
 from cs336_basics.loss import CrossEntropyLoss
@@ -21,21 +22,22 @@ class TrainingConfig:
     # 模型超参数
     vocab_path: str = "tests/fixtures/gpt2_vocab.json"
     vocab_size: int = None  # 将在运行时根据 vocab_path 自动确定
-    context_length: int = 128  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
-    d_model: int = 256  # 推荐: 128-768 (需被 num_heads 整除)
+    context_length: int = 512  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
+    d_model: int = 512  # 推荐: 128-768 (需被 num_heads 整除)
     num_layers: int = 4  # 推荐: 4-12 (层数多利于理解复杂语法)
     num_heads: int = (
-        4  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
+        16  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
     )
-    d_ff: int = 1024  # 推荐: 4 * d_model (标准 Transformer 比例)
-    rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
+    d_ff: int = 1344  # 推荐: 4 * d_model (标准 Transformer 比例)
+    # rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
+    rope_theta = None
 
     # 训练超参数
     batch_size: int = (
         32  # 推荐: 16-128 (视显存而定，总 batch tokens = batch_size * context_length)
     )
     learning_rate: float = (
-        1e-3  # 推荐: 3e-4 到 1e-3 (小模型 LR 可稍大，大模型通常用 3e-4 或更小)
+        5e-4  # 推荐: 3e-4 到 1e-3 (小模型 LR 可稍大，大模型通常用 3e-4 或更小)
     )
     min_learning_rate: float = 6e-5  # 推荐: 0.1 * learning_rate 或更低
     max_iters: int = (
@@ -45,25 +47,43 @@ class TrainingConfig:
     weight_decay: float = 0.1  # 推荐: 0.01 - 0.1 (用于防止过拟合)
     grad_clip: float = 1.0  # 推荐: 1.0 (防止梯度爆炸，必设)
     use_amp: bool = True  # 是否使用混合精度训练 (GTX 1660 Ti 强烈建议开启)
+    amp_dtype: torch.dtype = torch.bfloat16
 
     # IO 与 日志参数
-    train_data_path: str = "data/TinyStoriesV2-GPT4-train.bin"
-    valid_data_path: str = "data/TinyStoriesV2-GPT4-valid.bin"
-    checkpoint_dir: str = "checkpoints"
+    train_data_path: str = "/root/autodl-tmp/data/TinyStoriesV2-GPT4-train.bin"
+    valid_data_path: str = "/root/autodl-tmp/data/TinyStoriesV2-GPT4-valid.bin"
+    checkpoint_dir: str = "checkpoints/transformer-run-512-4-4-1344"
     log_dir: str = "logs"
-    eval_interval: int = 500  # 建议: 每 500-1000 步评估一次
-    log_interval: int = 10  # 建议: 10-50 步记录一次日志
-    eval_iters: int = 50  # 评估时使用的 batch 数量
+    eval_interval: int = 1000  # 建议: 每 500-1000 步评估一次
+    log_interval: int = 50  # 建议: 10-50 步记录一次日志
+    eval_iters: int = 32      # 评估时使用的 batch 数量
     compile: bool = True  # 是否使用 torch.compile 加速 (首次运行有编译延迟)
+    gpu_memory_debug: bool = False  # 是否开启显存占用深度分析
 
     # WandB 参数
     use_wandb: bool = True
     wandb_project: str = "cs336-assignment-1"
     wandb_run_name: str = field(
-        default_factory=lambda: f"transformer-run-{time.strftime('%H%M%S')}"
+        default_factory=lambda: f"No RoPE"
     )
 
+    seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def set_seed(seed: int):
+    """
+    固定所有随机种子以确保实验的可复现性。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # 确保 CUDA 卷积算子是确定性的
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # 设置环境变量以确保某些特定的 CUDA 算子是确定性的
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 def get_data_loader(file_path, config, random_start=True):
@@ -97,10 +117,11 @@ def estimate_loss(model, train_loader, valid_loader, config):
         losses = torch.zeros(config.eval_iters)
         for k in range(config.eval_iters):
             x, y = next(loader)
-            logits = model(x)
-            # 展平 logits 和 targets 以匹配 CrossEntropyLoss 的输入要求
-            B, L, V = logits.shape
-            loss = CrossEntropyLoss(logits.view(B * L, V), y.view(B * L))
+            # 在评估时也使用 autocast 以保持内存效率
+            with torch.amp.autocast("cuda", enabled=config.use_amp, dtype=config.amp_dtype):
+                logits = model(x)
+                B, L, V = logits.shape
+                loss = CrossEntropyLoss(logits.view(B * L, V), y.view(B * L))
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -108,6 +129,9 @@ def estimate_loss(model, train_loader, valid_loader, config):
 
 
 def train(config: TrainingConfig):
+    # 固定随机种子
+    set_seed(config.seed)
+
     # 准备目录
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
@@ -125,6 +149,10 @@ def train(config: TrainingConfig):
 
     device = torch.device(config.device)
     print(f"Using device: {device}")
+
+    # 如果开启了显存调试，记录显存历史
+    if config.gpu_memory_debug:
+        torch.cuda.memory._record_memory_history(max_entries=100000)
 
     # 自动获取并校验词表大小
     if config.vocab_size is None:
@@ -155,14 +183,27 @@ def train(config: TrainingConfig):
         rope_theta=config.rope_theta,
         device=device,
     )
+    # model = PostNormTransformer_LM(
+    #     vocab_size=config.vocab_size,
+    #     context_length=config.context_length,
+    #     d_model=config.d_model,
+    #     num_layers=config.num_layers,
+    #     num_heads=config.num_heads,
+    #     d_ff=config.d_ff,
+    #     rope_theta=config.rope_theta,
+    #     device=device,
+    # )
     model.to(device)
 
     # 使用 torch.compile 加速模型 (PyTorch 2.0+)
     if config.compile:
         print("Compiling model (this may take a minute)...")
-        # 使用 reduce-overhead 模式，更适合你的显卡且能显著减少 Python 运行开销
-        model = torch.compile(model, mode="reduce-overhead")
-
+        # 针对 4090，建议使用 default 或 max-autotune。
+        # 注意：reduce-overhead 模式会预分配大量显存。
+        model = torch.compile(model)
+    
+    torch.set_float32_matmul_precision('high')
+    
     # 初始化优化器
     optimizer = SimpleAdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
@@ -190,6 +231,23 @@ def train(config: TrainingConfig):
     print("Starting training loop...")
     start_time = time.time()
     t0 = start_time
+
+    # 如果开启了显存调试，初始化 Profiler
+    prof = None
+    if config.gpu_memory_debug:
+        print("GPU Memory Debug enabled. Profiling iters 10-14...")
+        prof = torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(wait=10, warmup=1, active=3, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(config.log_dir),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        )
+        prof.start()
 
     while iter_num <= config.max_iters:
         # 1. 计算当前学习率 (余弦退火)
@@ -245,7 +303,7 @@ def train(config: TrainingConfig):
         x, y = next(train_loader)
 
         # 使用 autocast 进行混合精度训练
-        with torch.amp.autocast("cuda", enabled=config.use_amp):
+        with torch.amp.autocast("cuda", enabled=config.use_amp, dtype=config.amp_dtype):
             logits = model(x)
             # 展平以便计算损失
             B, L, V = logits.shape
@@ -264,6 +322,19 @@ def train(config: TrainingConfig):
         scaler.step(optimizer)
         scaler.update()
 
+        # Profiler 步进
+        if prof:
+            prof.step()
+            # 在 profiling 结束后的那一步保存显存快照 (pickle 格式)
+            if iter_num == 14:
+                print("Saving memory snapshot...")
+                snapshot = torch.cuda.memory._snapshot()
+                import pickle
+                with open(os.path.join(config.log_dir, "mem_snapshot.pickle"), "wb") as f:
+                    pickle.dump(snapshot, f)
+                prof.stop()
+                prof = None
+
         # 4. 控制台日志记录
         if iter_num % config.log_interval == 0:
             t1 = time.time()
@@ -271,11 +342,19 @@ def train(config: TrainingConfig):
             t0 = t1
             lossf = loss.item()
             wall_time = t1 - start_time
+
+            # 打印当前显存统计
+            allocated = torch.cuda.memory_allocated() / 1024**2
+            reserved = torch.cuda.memory_reserved() / 1024**2
+
             print(
-                f"Iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, total_time {wall_time:.2f}s"
+                f"Iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, "
+                f"Mem: {allocated:.0f}MB/{reserved:.0f}MB"
             )
             writer.add_scalar("Loss/iter", lossf, iter_num)
             writer.add_scalar("Time/wall_clock", wall_time, iter_num)
+            writer.add_scalar("Memory/Allocated", allocated, iter_num)
+            writer.add_scalar("Memory/Reserved", reserved, iter_num)
 
             if config.use_wandb:
                 wandb.log(
@@ -283,6 +362,7 @@ def train(config: TrainingConfig):
                         "train/loss": lossf,
                         "train/lr": lr,
                         "train/iter_dt": dt,
+                        "train/mem_allocated": allocated,
                         "wall_clock_time": wall_time,
                     },
                     step=iter_num,
@@ -290,6 +370,8 @@ def train(config: TrainingConfig):
 
         iter_num += 1
 
+    if prof:
+        prof.stop()
     writer.close()
     if config.use_wandb:
         wandb.finish()

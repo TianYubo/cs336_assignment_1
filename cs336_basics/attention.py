@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import einsum
 from .softmax import softmax_function
 from .positional_embedding import RotaryPositionalEmbeddingAdjacent
@@ -11,12 +12,6 @@ from .linear_module import LinearModule
 
 """
 Multi-Head Attention implementation with RoPE support.
-FLOPs 分析：
-- 假设输入张量形状为 (B, L, D)，其中 B 是批量大小，L 是序列长度，D 是模型维度。
-- 主要计算步骤包括：
-    1. 线性投影 Q, K, V：3 * (2BLD * D) = 6BLD^2 FLOPs
-    2. 计算注意力分数：B * num_heads * L * L * (D / num_heads) = B * L^2 * D FLOPs
-    3. Q 和 K 的 RoPE 位置编码应用：2 * 3.5 * BLD = 7*BLD FLOPs
 """
 
 
@@ -26,7 +21,7 @@ class MultiHeadAttention(nn.Module):
         d_model: int,
         num_heads: int,
         max_seq_len: int,
-        theta: float,
+        theta: float | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -40,8 +35,12 @@ class MultiHeadAttention(nn.Module):
         self.v_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
         self.output_proj = LinearModule(d_model, d_model, device=device, dtype=dtype)
 
-        self.rope = RotaryPositionalEmbeddingAdjacent(
-            theta=theta, d_k=self.d_k, max_seq_len=max_seq_len, device=device
+        self.rope = (
+            RotaryPositionalEmbeddingAdjacent(
+                theta=theta, d_k=self.d_k, max_seq_len=max_seq_len, device=device
+            )
+            if theta is not None
+            else None
         )
 
     def forward(
@@ -67,16 +66,21 @@ class MultiHeadAttention(nn.Module):
         K = K.view(*batch_dims, seq_len, self.num_heads, self.d_k).transpose(-3, -2)
         V = V.view(*batch_dims, seq_len, self.num_heads, self.d_k).transpose(-3, -2)
 
-        Q = self.rope(Q, token_positions)
-        K = self.rope(K, token_positions)
+        if self.rope is not None:
+            Q = self.rope(Q, token_positions)
+            K = self.rope(K, token_positions)
 
-        # 创建因果掩码 (Causal Mask)
-        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device)).unsqueeze(0)
+        # 使用 PyTorch 原生的 scaled_dot_product_attention
+        # 它会自动调用 Flash Attention (在 4090 上极快且省显存)
+        # is_causal=True 会自动应用下三角掩码
+        attn_output = F.scaled_dot_product_attention(
+            Q, K, V, is_causal=True
+        )
+        # # 创建因果掩码 (Causal Mask)
+        # mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device)).unsqueeze(0)
 
-        # 缩放点积注意力
-        attn_output = scaled_dot_product_attention(
-            Q, K, V, mask=mask
-        )  # (..., num_heads, seq_len, d_k)
+        # 将多头的结果重新合并回 d_model 维度
+        # (..., num_heads, seq_len, d_k) -> (..., seq_len, num_heads, d_k) -> (..., seq_len, d_model)
         attn_output = (
             attn_output.transpose(-3, -2)
             .contiguous()

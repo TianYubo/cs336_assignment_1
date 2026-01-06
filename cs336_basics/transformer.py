@@ -13,7 +13,7 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         d_ff: int,
         max_seq_len: int,
-        theta: float,
+        theta: float | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -31,4 +31,32 @@ class TransformerBlock(nn.Module):
         # x = x + ffn(norm2(x))
         x = x + self.attn(self.ln1(x), token_positions=token_positions)
         x = x + self.ffn(self.ln2(x))
+        return x
+
+
+class PostNormTransformerBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int,
+        theta: float | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        self.attn = MultiHeadAttention(
+            d_model, num_heads, max_seq_len, theta, device=device, dtype=dtype
+        )
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype, eps=1e-6)
+        self.ffn = SwiGLU(d_model, d_ff)
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
+        # Post-norm architecture
+        # x = norm1(x + attn(x))
+        # x = norm2(x + ffn(x))
+        x = self.ln1(x + self.attn(x, token_positions=token_positions))
+        x = self.ln2(x + self.ffn(x))
         return x

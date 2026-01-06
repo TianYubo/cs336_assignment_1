@@ -23,19 +23,21 @@ def decode_token_ids(token_ids: list[int]):
     return tokenizer.decode(token_ids)
 
 
-user_input = "Please write a story about a "
+user_input = "Please write a story about a cat: "
 
 
 @dataclass
 class InferenceConfig:
     # 模型超参数
     vocab_size: int = 50257  # 根据实际 tokenizer 调整
-    context_length: int = 128
-    d_model: int = 256
-    num_layers: int = 4
-    num_heads: int = 4
-    d_ff: int = 1024
-    rope_theta: float = 10000.0
+    context_length: int = 512  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
+    d_model: int = 512  # 推荐: 128-768 (需被 num_heads 整除)
+    num_layers: int = 4  # 推荐: 4-12 (层数多利于理解复杂语法)
+    num_heads: int = (
+        16  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
+    )
+    d_ff: int = 1344  # 推荐: 4 * d_model (标准 Transformer 比例)
+    rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
 
     temperature: float = 1.0
     top_p: float = 0.9
