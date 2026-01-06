@@ -23,14 +23,14 @@ class TrainingConfig:
     vocab_path: str = "tests/fixtures/gpt2_vocab.json"
     vocab_size: int = None  # 将在运行时根据 vocab_path 自动确定
     context_length: int = 512  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
-    d_model: int = 512  # 推荐: 128-768 (需被 num_heads 整除)
-    num_layers: int = 4  # 推荐: 4-12 (层数多利于理解复杂语法)
+    d_model: int = 768  # 推荐: 128-768 (需被 num_heads 整除)
+    num_layers: int = 8  # 推荐: 4-12 (层数多利于理解复杂语法)
     num_heads: int = (
         16  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
     )
     d_ff: int = 1344  # 推荐: 4 * d_model (标准 Transformer 比例)
-    # rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
-    rope_theta = None
+    rope_theta: float = 10000.0  # 常用值: 10000.0 (外推需求大时可调大)
+    # rope_theta = None
 
     # 训练超参数
     batch_size: int = (
@@ -41,7 +41,7 @@ class TrainingConfig:
     )
     min_learning_rate: float = 6e-5  # 推荐: 0.1 * learning_rate 或更低
     max_iters: int = (
-        5000  # 推荐: 视 Loss 曲线而定，TinyStories 充分训练通常需 20k+ steps
+        20000  # 推荐: 视 Loss 曲线而定，TinyStories 充分训练通常需 20k+ steps
     )
     warmup_iters: int = 500  # 推荐: 5%-10% of max_iters
     weight_decay: float = 0.1  # 推荐: 0.01 - 0.1 (用于防止过拟合)
@@ -64,7 +64,7 @@ class TrainingConfig:
     use_wandb: bool = True
     wandb_project: str = "cs336-assignment-1"
     wandb_run_name: str = field(
-        default_factory=lambda: f"No RoPE"
+        default_factory=lambda: f"Bigger Baseline"
     )
 
     seed: int = 42
@@ -338,35 +338,54 @@ def train(config: TrainingConfig):
         # 4. 控制台日志记录
         if iter_num % config.log_interval == 0:
             t1 = time.time()
-            dt = t1 - t0
-            t0 = t1
             lossf = loss.item()
             wall_time = t1 - start_time
-
-            # 打印当前显存统计
             allocated = torch.cuda.memory_allocated() / 1024**2
-            reserved = torch.cuda.memory_reserved() / 1024**2
+            peak = torch.cuda.max_memory_allocated() / 1024**2
 
-            print(
-                f"Iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, "
-                f"Mem: {allocated:.0f}MB/{reserved:.0f}MB"
-            )
+            if iter_num > 0:
+                dt = t1 - t0
+                # 计算吞吐量 (Tokens per second)
+                tokens_per_iter = x.numel()
+                tokens_per_sec = (config.log_interval * tokens_per_iter) / dt
+
+                # 计算预计剩余时间 (ETA)
+                remaining_iters = config.max_iters - iter_num
+                eta_seconds = (dt / config.log_interval) * remaining_iters
+                eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
+
+                print(
+                    f"Iter {iter_num:5d}/{config.max_iters} | "
+                    f"Loss: {lossf:.4f} | "
+                    f"LR: {lr:.2e} | "
+                    f"Time: {dt*1000/config.log_interval:.2f}ms/it | "
+                    f"Tok/s: {tokens_per_sec:7.1f} | "
+                    f"ETA: {eta_str} | "
+                    f"Mem: {allocated:.0f}MB/{peak:.0f}MB"
+                )
+            else:
+                print(f"Iter {iter_num:5d}/{config.max_iters} | Loss: {lossf:.4f} | LR: {lr:.2e}")
+
+            t0 = t1
             writer.add_scalar("Loss/iter", lossf, iter_num)
             writer.add_scalar("Time/wall_clock", wall_time, iter_num)
             writer.add_scalar("Memory/Allocated", allocated, iter_num)
-            writer.add_scalar("Memory/Reserved", reserved, iter_num)
+            writer.add_scalar("Memory/Peak", peak, iter_num)
 
             if config.use_wandb:
-                wandb.log(
-                    {
-                        "train/loss": lossf,
-                        "train/lr": lr,
-                        "train/iter_dt": dt,
-                        "train/mem_allocated": allocated,
-                        "wall_clock_time": wall_time,
-                    },
-                    step=iter_num,
-                )
+                metrics = {
+                    "train/loss": lossf,
+                    "train/lr": lr,
+                    "train/mem_allocated": allocated,
+                    "train/mem_peak": peak,
+                    "wall_clock_time": wall_time,
+                }
+                if iter_num > 0:
+                    metrics.update({
+                        "train/iter_dt": dt / config.log_interval,
+                        "train/tokens_per_sec": tokens_per_sec,
+                    })
+                wandb.log(metrics, step=iter_num)
 
         iter_num += 1
 

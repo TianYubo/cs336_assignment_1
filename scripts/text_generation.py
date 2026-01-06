@@ -23,7 +23,7 @@ def decode_token_ids(token_ids: list[int]):
     return tokenizer.decode(token_ids)
 
 
-user_input = "Please write a story about a cat: "
+user_input = "Please tell me a story about a cat: "
 
 
 @dataclass
@@ -31,8 +31,8 @@ class InferenceConfig:
     # 模型超参数
     vocab_size: int = 50257  # 根据实际 tokenizer 调整
     context_length: int = 512  # 推荐: 128-512 (对于 TinyStories, 256-512 效果更好)
-    d_model: int = 512  # 推荐: 128-768 (需被 num_heads 整除)
-    num_layers: int = 4  # 推荐: 4-12 (层数多利于理解复杂语法)
+    d_model: int = 768  # 推荐: 128-768 (需被 num_heads 整除)
+    num_layers: int = 8  # 推荐: 4-12 (层数多利于理解复杂语法)
     num_heads: int = (
         16  # 推荐: 4-12 (每个 head 的维度 d_model/num_heads 建议在 32-128 之间)
     )
@@ -48,7 +48,7 @@ class InferenceConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 模型路径
-    model_path: str = "checkpoints/best_model.pt"
+    model_path: str = "checkpoints/transformer-run-512-4-4-1344/best_model.pt"
 
 
 def main_infer(config: InferenceConfig):
@@ -136,4 +136,5 @@ def main_infer(config: InferenceConfig):
 
 if __name__ == "__main__":
     generated_text = main_infer(InferenceConfig())
-    print(f"\nGenerated text:\n{generated_text}")
+    print(f"Prompt: {user_input}")
+    print(f"Generated text: {generated_text}")
